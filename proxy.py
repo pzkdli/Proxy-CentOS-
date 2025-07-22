@@ -3,12 +3,14 @@ import string
 import subprocess
 import datetime
 import os
+import threading
+import time
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 import sqlite3
 import ipaddress
-import time
-import logging
+import json
 
 # Thiết lập logging để debug lỗi
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -79,6 +81,50 @@ def generate_ipv6_from_prefix(prefix, num_addresses):
         logger.error(f"Lỗi khi tạo IPv6 từ prefix {prefix}: {e}")
         raise
 
+# Kiểm tra kết nối proxy thực tế
+def check_proxy_usage(ipv4, port, user, password):
+    try:
+        cmd = f'curl --proxy http://{user}:{password}@{ipv4}:{port} --connect-timeout 5 https://api64.ipify.org?format=json'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            response = json.loads(result.stdout)
+            ip = response.get('ip', '')
+            logger.info(f"Proxy {ipv4}:{port} trả về IP: {ip}")
+            return True, ip  # Trả về trạng thái kết nối và IP
+        else:
+            logger.error(f"Proxy {ipv4}:{port} không kết nối được: {result.stderr}")
+            return False, None
+    except Exception as e:
+        logger.error(f"Lỗi khi kiểm tra proxy {ipv4}:{port}: {e}")
+        return False, None
+
+# Tự động kiểm tra proxy mỗi 60 giây
+def auto_check_proxies():
+    while True:
+        try:
+            conn = sqlite3.connect('proxies.db')
+            c = conn.cursor()
+            c.execute("SELECT ipv4, port, user, password, ipv6 FROM proxies")
+            proxies = c.fetchall()
+            
+            for proxy in proxies:
+                ipv4, port, user, password, ipv6 = proxy
+                is_used, returned_ip = check_proxy_usage(ipv4, port, user, password)
+                if returned_ip:
+                    try:
+                        ipaddress.IPv6Address(returned_ip)  # Kiểm tra xem IP trả về có phải IPv6 không
+                        if returned_ip != ipv6:
+                            logger.warning(f"Proxy {ipv4}:{port} trả về IPv6 {returned_ip} không khớp với {ipv6}")
+                    except ValueError:
+                        logger.warning(f"Proxy {ipv4}:{port} trả về IPv4 {returned_ip} thay vì IPv6")
+                c.execute("UPDATE proxies SET is_used=? WHERE ipv4=? AND port=? AND user=? AND password=?",
+                          (1 if is_used else 0, ipv4, port, user, password))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Lỗi khi kiểm tra proxy tự động: {e}")
+        time.sleep(60)  # Chờ 60 giây trước khi kiểm tra lại
+
 # Tạo proxy mới với danh sách IPv6
 def create_proxy(ipv4, ipv6_addresses, days):
     try:
@@ -125,7 +171,7 @@ http_access allow auth_users
             with open('/etc/squid/squid.conf', 'a') as f:
                 f.write(f"acl proxy_{user} myport {port}\n")
                 f.write(f"tcp_outgoing_address {ipv6} proxy_{user}\n")
-                f.write(f"http_port {port}\n")
+                f.write(f"http_port {ipv4}:{port}\n")  # Chỉ định rõ ràng IPv4 và cổng
             
             # Kiểm tra và thêm user vào file passwd
             result = subprocess.run(['htpasswd', '-b', '/etc/squid/passwd', user, password], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
@@ -156,10 +202,6 @@ http_access allow auth_users
     except Exception as e:
         logger.error(f"Lỗi khi tạo proxy: {e}")
         raise
-
-# Kiểm tra kết nối proxy (giả lập)
-def check_proxy_usage(ipv4, port):
-    return random.choice([True, False])
 
 # Telegram bot commands
 def start(update: Update, context: CallbackContext):
@@ -329,7 +371,7 @@ def message_handler(update: Update, context: CallbackContext):
                     lines = f.readlines()
                 with open('/etc/squid/squid.conf', 'w') as f:
                     for line in lines:
-                        if f"acl proxy_{user}" not in line and f"tcp_outgoing_address {ipv6}" not in line and f"http_port {port}" not in line:
+                        if f"acl proxy_{user}" not in line and f"tcp_outgoing_address {ipv6}" not in line and f"http_port {ipv4}:{port}" not in line:
                             f.write(line)
                 subprocess.run(['systemctl', 'restart', 'squid'], check=True)
                 update.message.reply_text(f"Đã xóa proxy {text}")
@@ -379,6 +421,10 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CallbackQueryHandler(button))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
+    
+    # Khởi động luồng kiểm tra proxy
+    threading.Thread(target=auto_check_proxies, daemon=True).start()
+    
     updater.start_polling(poll_interval=1.0)  # Giới hạn 1 request/giây
     updater.idle()
 
