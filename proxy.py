@@ -8,6 +8,11 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageH
 import sqlite3
 import ipaddress
 import time
+import logging
+
+# Thiết lập logging để debug lỗi
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Kết nối cơ sở dữ liệu SQLite
 def init_db():
@@ -34,69 +39,86 @@ def validate_ipv6_prefix(prefix):
         ipaddress.IPv6Network(prefix, strict=False)
         return True
     except ValueError:
+        logger.error(f"Prefix IPv6 không hợp lệ: {prefix}")
         return False
 
 # Tạo địa chỉ IPv6 ngẫu nhiên từ prefix
 def generate_ipv6_from_prefix(prefix, num_addresses):
-    network = ipaddress.IPv6Network(prefix, strict=False)
-    base_addr = int(network.network_address)
-    max_addr = int(network.broadcast_address)
-    ipv6_addresses = []
-    
-    conn = sqlite3.connect('proxies.db')
-    c = conn.cursor()
-    c.execute("SELECT ipv6 FROM proxies")
-    used_ipv6 = [row[0] for row in c.fetchall()]
-    conn.close()
-    
-    for _ in range(num_addresses):
-        while True:
-            random_addr = base_addr + random.randint(0, max_addr - base_addr)
-            ipv6 = str(ipaddress.IPv6Address(random_addr))
-            if ipv6 not in used_ipv6:
-                ipv6_addresses.append(ipv6)
-                used_ipv6.append(ipv6)
-                break
-    
-    return ipv6_addresses
+    try:
+        network = ipaddress.IPv6Network(prefix, strict=False)
+        base_addr = int(network.network_address)
+        max_addr = int(network.broadcast_address)
+        ipv6_addresses = []
+        
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
+        c.execute("SELECT ipv6 FROM proxies")
+        used_ipv6 = [row[0] for row in c.fetchall()]
+        conn.close()
+        
+        for _ in range(num_addresses):
+            while True:
+                random_addr = base_addr + random.randint(0, max_addr - base_addr)
+                ipv6 = str(ipaddress.IPv6Address(random_addr))
+                if ipv6 not in used_ipv6:
+                    ipv6_addresses.append(ipv6)
+                    used_ipv6.append(ipv6)
+                    break
+        
+        return ipv6_addresses
+    except Exception as e:
+        logger.error(f"Lỗi khi tạo IPv6 từ prefix {prefix}: {e}")
+        raise
 
 # Tạo proxy mới với danh sách IPv6
 def create_proxy(ipv4, ipv6_addresses, days):
-    conn = sqlite3.connect('proxies.db')
-    c = conn.cursor()
-    
-    c.execute("SELECT port FROM proxies")
-    used_ports = [row[0] for row in c.fetchall()]
-    
-    proxies = []
-    for ipv6 in ipv6_addresses:
-        while True:
-            port = random.randint(1000, 60000)
-            if port not in used_ports:
-                used_ports.append(port)
-                break
+    try:
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
         
-        user = generate_user()
-        password = generate_password()
-        expiry_date = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("SELECT port FROM proxies")
+        used_ports = [row[0] for row in c.fetchall()]
         
-        c.execute("INSERT INTO proxies (ipv4, port, user, password, ipv6, expiry_date, is_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (ipv4, port, user, password, ipv6, expiry_date, 0))
+        proxies = []
+        for ipv6 in ipv6_addresses:
+            while True:
+                port = random.randint(1000, 60000)
+                if port not in used_ports:
+                    used_ports.append(port)
+                    break
+            
+            user = generate_user()
+            password = generate_password()
+            expiry_date = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            c.execute("INSERT INTO proxies (ipv4, port, user, password, ipv6, expiry_date, is_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (ipv4, port, user, password, ipv6, expiry_date, 0))
+            
+            # Thêm cấu hình Squid cho mỗi proxy
+            with open('/etc/squid/squid.conf', 'a') as f:
+                f.write(f"acl proxy_{user} myport {port}\n")
+                f.write(f"tcp_outgoing_address {ipv6} proxy_{user}\n")
+            
+            subprocess.run(['htpasswd', '-b', '/etc/squid/passwd', user, password], check=True)
+            
+            proxies.append((f"{ipv4}:{port}:{user}:{password}", ipv6))
         
-        with open('/etc/squid/squid.conf', 'a') as f:
-            f.write(f"tcp_outgoing_address {ipv6}\n")
-            f.write(f"http_port {port}\n")
+        conn.commit()
+        conn.close()
         
-        subprocess.run(['htpasswd', '-b', '/etc/squid/passwd', user, password])
+        # Kiểm tra và restart Squid
+        result = subprocess.run(['squid', '-k', 'check'], capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Lỗi cấu hình Squid: {result.stderr}")
+            raise Exception(f"Lỗi cấu hình Squid: {result.stderr}")
         
-        proxies.append(f"{ipv4}:{port}:{user}:{password}")
-    
-    conn.commit()
-    conn.close()
-    
-    subprocess.run(['systemctl', 'restart', 'squid'])
-    
-    return proxies
+        subprocess.run(['systemctl', 'restart', 'squid'], check=True)
+        logger.info(f"Đã tạo {len(proxies)} proxy với IPv6 tương ứng")
+        
+        return proxies
+    except Exception as e:
+        logger.error(f"Lỗi khi tạo proxy: {e}")
+        raise
 
 # Kiểm tra kết nối proxy (giả lập)
 def check_proxy_usage(ipv4, port):
@@ -131,7 +153,7 @@ def button(update: Update, context: CallbackContext):
     elif query.data == 'check':
         conn = sqlite3.connect('proxies.db')
         c = conn.cursor()
-        c.execute("SELECT ipv4, port, user, password, is_used FROM proxies")
+        c.execute("SELECT ipv4, port, user, password, is_used, ipv6 FROM proxies")
         proxies = c.fetchall()
         conn.close()
         
@@ -140,14 +162,18 @@ def button(update: Update, context: CallbackContext):
         
         with open('waiting.txt', 'w') as f:
             for p in waiting:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
         with open('used.txt', 'w') as f:
             for p in used:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
         
-        context.bot.send_document(chat_id=update.effective_chat.id, document=open('waiting.txt', 'rb'), caption="Danh sách proxy chờ")
-        context.bot.send_document(chat_id=update.effective_chat.id, document=open('used.txt', 'rb'), caption="Danh sách proxy đã sử dụng")
-        query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được gửi.")
+        try:
+            context.bot.send_document(chat_id=update.effective_chat.id, document=open('waiting.txt', 'rb'), caption="Danh sách proxy chờ")
+            context.bot.send_document(chat_id=update.effective_chat.id, document=open('used.txt', 'rb'), caption="Danh sách proxy đã sử dụng")
+            query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được gửi.")
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi file waiting.txt/used.txt: {e}")
+            query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nLỗi khi gửi file: {e}")
     elif query.data == 'giahan':
         query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
         context.user_data['state'] = 'giahan'
@@ -195,16 +221,26 @@ def message_handler(update: Update, context: CallbackContext):
             proxies = create_proxy(ipv4, ipv6_addresses, days)
             
             if num_proxies < 5:
-                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
+                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(p[0] + f" (IPv6: {p[1]})" for p in proxies))
             else:
                 with open('proxies.txt', 'w') as f:
-                    for proxy in proxies:
-                        f.write(f"{proxy}\n")
-                context.bot.send_document(chat_id=update.effective_chat.id, document=open('proxies.txt', 'rb'), caption=f"Đã tạo {num_proxies} proxy")
+                    for proxy, ipv6 in proxies:
+                        f.write(f"{proxy} (IPv6: {ipv6})\n")
+                try:
+                    context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=open('proxies.txt', 'rb'),
+                        caption=f"Đã tạo {num_proxies} proxy",
+                        timeout=30
+                    )
+                except Exception as e:
+                    logger.error(f"Lỗi khi gửi file proxies.txt: {e}")
+                    update.message.reply_text(f"Đã tạo {num_proxies} proxy nhưng lỗi khi gửi file: {e}\nFile proxies.txt đã được lưu trên hệ thống.")
             
             context.user_data['state'] = None
-        except:
-            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày (ví dụ: 5 7)")
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý lệnh /New: {e}")
+            update.message.reply_text(f"Định dạng không hợp lệ hoặc lỗi: {e}")
     elif state == 'giahan':
         try:
             proxy, days = text.rsplit(' ', 1)
@@ -243,34 +279,36 @@ def message_handler(update: Update, context: CallbackContext):
                           (ipv4, int(port), user, password))
                 conn.commit()
                 
-                subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user])
+                subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user], check=True)
                 
                 with open('/etc/squid/squid.conf', 'r') as f:
                     lines = f.readlines()
                 with open('/etc/squid/squid.conf', 'w') as f:
                     for line in lines:
-                        if f"tcp_outgoing_address {ipv6}" not in line and f"http_port {port}" not in line:
+                        if f"acl proxy_{user}" not in line and f"tcp_outgoing_address {ipv6}" not in line:
                             f.write(line)
-                subprocess.run(['systemctl', 'restart', 'squid'])
+                subprocess.run(['systemctl', 'restart', 'squid'], check=True)
                 update.message.reply_text(f"Đã xóa proxy {text}")
             else:
                 update.message.reply_text("Proxy không tồn tại!")
             conn.close()
             context.user_data['state'] = None
-        except:
-            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass")
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa proxy: {e}")
+            update.message.reply_text(f"Định dạng không hợp lệ hoặc lỗi: {e}")
     elif state == 'xoa_all':
         if text == 'Xac_nhan_xoa_all':
-            conn = sqlite3.connect('proxies.db')
-            c = conn.cursor()
-            c.execute("DELETE FROM proxies")
-            conn.commit()
-            conn.close()
-            
-            open('/etc/squid/passwd', 'w').close()
-            
-            with open('/etc/squid/squid.conf', 'w') as f:
-                f.write("""
+            try:
+                conn = sqlite3.connect('proxies.db')
+                c = conn.cursor()
+                c.execute("DELETE FROM proxies")
+                conn.commit()
+                conn.close()
+                
+                open('/etc/squid/passwd', 'w').close()
+                
+                with open('/etc/squid/squid.conf', 'w') as f:
+                    f.write("""
 acl localnet src 0.0.0.0/0
 http_access allow localnet
 http_access deny all
@@ -281,9 +319,12 @@ auth_param basic credentialsttl 2 hours
 acl auth_users proxy_auth REQUIRED
 http_access allow auth_users
 """)
-            subprocess.run(['systemctl', 'restart', 'squid'])
-            update.message.reply_text("Đã xóa tất cả proxy!")
-            context.user_data['state'] = None
+                subprocess.run(['systemctl', 'restart', 'squid'], check=True)
+                update.message.reply_text("Đã xóa tất cả proxy!")
+                context.user_data['state'] = None
+            except Exception as e:
+                logger.error(f"Lỗi khi xóa tất cả proxy: {e}")
+                update.message.reply_text(f"Lỗi khi xóa tất cả proxy: {e}")
         else:
             update.message.reply_text("Vui lòng nhập: Xac_nhan_xoa_all")
 
