@@ -133,7 +133,7 @@ http_access allow auth_users
                 logger.error(f"Lỗi khi thêm user {user} vào /etc/squid/passwd: {result.stderr}")
                 raise Exception(f"Lỗi khi thêm user {user}: {result.stderr}")
             
-            proxies.append((f"{ipv4}:{port}:{user}:{password}", ipv6))
+            proxies.append(f"{ipv4}:{port}:{user}:{password}")
         
         conn.commit()
         conn.close()
@@ -199,10 +199,10 @@ def button(update: Update, context: CallbackContext):
         
         with open('waiting.txt', 'w') as f:
             for p in waiting:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
         with open('used.txt', 'w') as f:
             for p in used:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
         
         try:
             context.bot.send_document(chat_id=update.effective_chat.id, document=open('waiting.txt', 'rb'), caption="Danh sách proxy chờ")
@@ -265,11 +265,11 @@ def message_handler(update: Update, context: CallbackContext):
             proxies = create_proxy(ipv4, ipv6_addresses, days)
             
             if num_proxies < 5:
-                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(p[0] + f" (IPv6: {p[1]})" for p in proxies))
+                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
             else:
                 with open('proxies.txt', 'w') as f:
-                    for proxy, ipv6 in proxies:
-                        f.write(f"{proxy} (IPv6: {ipv6})\n")
+                    for proxy in proxies:
+                        f.write(f"{proxy}\n")
                 try:
                     context.bot.send_document(
                         chat_id=update.effective_chat.id,
