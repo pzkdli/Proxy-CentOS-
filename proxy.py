@@ -3,17 +3,11 @@ import string
 import subprocess
 import datetime
 import os
-from telethon.sync import TelegramClient
-from telethon import events
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 import sqlite3
 import ipaddress
-import asyncio
-
-# Thông tin API
-API_ID = 28514063
-API_HASH = "96f1688ba0ae0f7516af16381c49a5ca"
-BOT_TOKEN = "7022711443:AAG2kU-TWDskXqFxCjap1DGw2jjji2HE2Ac"
-ADMIN_ID = 7550813603
+import time
 
 # Kết nối cơ sở dữ liệu SQLite
 def init_db():
@@ -108,175 +102,173 @@ def create_proxy(ipv4, ipv6_addresses, days):
 def check_proxy_usage(ipv4, port):
     return random.choice([True, False])
 
-# Xử lý bot
-async def main():
-    init_db()
-    async with TelegramClient('bot_session', API_ID, API_HASH) as client:
-        await client.start(bot_token=BOT_TOKEN)
+# Telegram bot commands
+def start(update: Update, context: CallbackContext):
+    if update.message.from_user.id != 7550813603:
+        update.message.reply_text("Bạn không có quyền sử dụng bot này!")
+        return
+    
+    update.message.reply_text("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
+    context.user_data['state'] = 'prefix'
+
+def button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    
+    if query.data == 'new':
+        if 'prefix' not in context.user_data:
+            query.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+            return
+        query.message.reply_text("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
+        context.user_data['state'] = 'new'
+    elif query.data == 'xoa':
+        keyboard = [
+            [InlineKeyboardButton("Xóa proxy lẻ", callback_data='xoa_le'),
+             InlineKeyboardButton("Xóa hàng loạt", callback_data='xoa_all')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.message.reply_text("Chọn kiểu xóa:", reply_markup=reply_markup)
+    elif query.data == 'check':
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
+        c.execute("SELECT ipv4, port, user, password, is_used FROM proxies")
+        proxies = c.fetchall()
+        conn.close()
         
-        @client.on(events.NewMessage(from_users=ADMIN_ID, pattern='/start'))
-        async def start(event):
-            context = getattr(client, '_user_data', {})
-            context['state'] = 'prefix'
-            client._user_data = context
-            await event.reply("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
+        waiting = [p for p in proxies if p[4] == 0]
+        used = [p for p in proxies if p[4] == 1]
+        
+        with open('waiting.txt', 'w') as f:
+            for p in waiting:
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
+        with open('used.txt', 'w') as f:
+            for p in used:
+                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
+        
+        query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
+    elif query.data == 'giahan':
+        query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
+        context.user_data['state'] = 'giahan'
+    elif query.data == 'xoa_le':
+        query.message.reply_text("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
+        context.user_data['state'] = 'xoa_le'
+    elif query.data == 'xoa_all':
+        query.message.reply_text("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
+        context.user_data['state'] = 'xoa_all'
 
-        @client.on(events.CallbackQuery(from_users=ADMIN_ID))
-        async def button(event):
-            context = getattr(client, '_user_data', {})
-            data = event.data.decode('utf-8')
+def message_handler(update: Update, context: CallbackContext):
+    if update.message.from_user.id != 7550813603:
+        update.message.reply_text("Bạn không có quyền sử dụng bot này!")
+        return
+    
+    state = context.user_data.get('state')
+    text = update.message.text.strip()
+    
+    if state == 'prefix':
+        if validate_ipv6_prefix(text):
+            context.user_data['prefix'] = text
+            keyboard = [
+                [InlineKeyboardButton("/New", callback_data='new'),
+                 InlineKeyboardButton("/Xoa", callback_data='xoa')],
+                [InlineKeyboardButton("/Check", callback_data='check'),
+                 InlineKeyboardButton("/Giahan", callback_data='giahan')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text("Prefix IPv6 đã được lưu. Chọn lệnh:", reply_markup=reply_markup)
+            context.user_data['state'] = None
+        else:
+            update.message.reply_text("Prefix IPv6 không hợp lệ! Vui lòng nhập lại:")
+    elif state == 'new':
+        try:
+            num_proxies, days = map(int, text.split())
+            if num_proxies <= 0 or days <= 0:
+                update.message.reply_text("Số lượng và số ngày phải lớn hơn 0!")
+                return
+            prefix = context.user_data.get('prefix')
+            if not prefix:
+                update.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+                return
+            ipv6_addresses = generate_ipv6_from_prefix(prefix, num_proxies)
+            ipv4 = subprocess.getoutput("curl -s ifconfig.me")
+            proxies = create_proxy(ipv4, ipv6_addresses, days)
             
-            if data == 'new':
-                if 'prefix' not in context:
-                    await event.reply("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
-                    return
-                context['state'] = 'new'
-                await event.reply("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
-            elif data == 'xoa':
-                keyboard = [
-                    [{"text": "Xóa proxy lẻ", "callback_data": "xoa_le"},
-                     {"text": "Xóa hàng loạt", "callback_data": "xoa_all"}]
-                ]
-                await event.reply("Chọn kiểu xóa:", reply_markup={'inline_keyboard': keyboard})
-            elif data == 'check':
-                conn = sqlite3.connect('proxies.db')
-                c = conn.cursor()
-                c.execute("SELECT ipv4, port, user, password, is_used FROM proxies")
-                proxies = c.fetchall()
-                conn.close()
-                
-                waiting = [p for p in proxies if p[4] == 0]
-                used = [p for p in proxies if p[4] == 1]
-                
-                with open('waiting.txt', 'w') as f:
-                    for p in waiting:
-                        f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
-                with open('used.txt', 'w') as f:
-                    for p in used:
-                        f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
-                
-                await event.reply(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
-            elif data == 'giahan':
-                context['state'] = 'giahan'
-                await event.reply("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
-            elif data == 'xoa_le':
-                context['state'] = 'xoa_le'
-                await event.reply("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
-            elif data == 'xoa_all':
-                context['state'] = 'xoa_all'
-                await event.reply("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
+            if num_proxies < 5:
+                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
+            else:
+                with open('proxies.txt', 'w') as f:
+                    for proxy in proxies:
+                        f.write(f"{proxy}\n")
+                update.message.reply_text(f"Đã tạo {num_proxies} proxy và lưu vào file proxies.txt")
             
-            client._user_data = context
-
-        @client.on(events.NewMessage(from_users=ADMIN_ID))
-        async def message_handler(event):
-            context = getattr(client, '_user_data', {})
-            text = event.message.text.strip()
+            context.user_data['state'] = None
+        except:
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày (ví dụ: 5 7)")
+    elif state == 'giahan':
+        try:
+            proxy, days = text.rsplit(' ', 1)
+            ipv4, port, user, password = proxy.split(':')
+            days = int(days)
             
-            if context.get('state') == 'prefix':
-                if validate_ipv6_prefix(text):
-                    context['prefix'] = text
-                    keyboard = [
-                        [{"text": "/New", "callback_data": "new"},
-                         {"text": "/Xoa", "callback_data": "xoa"}],
-                        [{"text": "/Check", "callback_data": "check"},
-                         {"text": "/Giahan", "callback_data": "giahan"}]
-                    ]
-                    await event.reply("Prefix IPv6 đã được lưu. Chọn lệnh:", reply_markup={'inline_keyboard': keyboard})
-                    context['state'] = None
-                else:
-                    await event.reply("Prefix IPv6 không hợp lệ! Vui lòng nhập lại:")
-            elif context.get('state') == 'new':
-                try:
-                    num_proxies, days = map(int, text.split())
-                    if num_proxies <= 0 or days <= 0:
-                        await event.reply("Số lượng và số ngày phải lớn hơn 0!")
-                        return
-                    prefix = context.get('prefix')
-                    if not prefix:
-                        await event.reply("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
-                        return
-                    ipv6_addresses = generate_ipv6_from_prefix(prefix, num_proxies)
-                    ipv4 = subprocess.getoutput("curl -s ifconfig.me")
-                    proxies = create_proxy(ipv4, ipv6_addresses, days)
-                    
-                    if num_proxies < 5:
-                        await event.reply("Proxy đã tạo:\n" + "\n".join(proxies))
-                    else:
-                        with open('proxies.txt', 'w') as f:
-                            for proxy in proxies:
-                                f.write(f"{proxy}\n")
-                        await event.reply(f"Đã tạo {num_proxies} proxy và lưu vào file proxies.txt")
-                    
-                    context['state'] = None
-                except:
-                    await event.reply("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày (ví dụ: 5 7)")
-            elif context.get('state') == 'giahan':
-                try:
-                    proxy, days = text.rsplit(' ', 1)
-                    ipv4, port, user, password = proxy.split(':')
-                    days = int(days)
-                    
-                    conn = sqlite3.connect('proxies.db')
-                    c = conn.cursor()
-                    c.execute("SELECT expiry_date FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                              (ipv4, int(port), user, password))
-                    result = c.fetchone()
-                    if result:
-                        old_expiry = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
-                        new_expiry = (old_expiry + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-                        c.execute("UPDATE proxies SET expiry_date=? WHERE ipv4=? AND port=? AND user=? AND password=?",
-                                  (new_expiry, ipv4, int(port), user, password))
-                        conn.commit()
-                        await event.reply(f"Đã gia hạn proxy {proxy} thêm {days} ngày.")
-                    else:
-                        await event.reply("Proxy không tồn tại!")
-                    conn.close()
-                    context['state'] = None
-                except:
-                    await event.reply("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass số_ngày")
-            elif context.get('state') == 'xoa_le':
-                try:
-                    ipv4, port, user, password = text.split(':')
-                    conn = sqlite3.connect('proxies.db')
-                    c = conn.cursor()
-                    c.execute("SELECT ipv6 FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                              (ipv4, int(port), user, password))
-                    result = c.fetchone()
-                    if result:
-                        ipv6 = result[0]
-                        c.execute("DELETE FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                                  (ipv4, int(port), user, password))
-                        conn.commit()
-                        
-                        subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user])
-                        
-                        with open('/etc/squid/squid.conf', 'r') as f:
-                            lines = f.readlines()
-                        with open('/etc/squid/squid.conf', 'w') as f:
-                            for line in lines:
-                                if f"tcp_outgoing_address {ipv6}" not in line and f"http_port {port}" not in line:
-                                    f.write(line)
-                        subprocess.run(['systemctl', 'restart', 'squid'])
-                        await event.reply(f"Đã xóa proxy {text}")
-                    else:
-                        await event.reply("Proxy không tồn tại!")
-                    conn.close()
-                    context['state'] = None
-                except:
-                    await event.reply("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass")
-            elif context.get('state') == 'xoa_all':
-                if text == 'Xac_nhan_xoa_all':
-                    conn = sqlite3.connect('proxies.db')
-                    c = conn.cursor()
-                    c.execute("DELETE FROM proxies")
-                    conn.commit()
-                    conn.close()
-                    
-                    open('/etc/squid/passwd', 'w').close()
-                    
-                    with open('/etc/squid/squid.conf', 'w') as f:
-                        f.write("""
+            conn = sqlite3.connect('proxies.db')
+            c = conn.cursor()
+            c.execute("SELECT expiry_date FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
+                      (ipv4, int(port), user, password))
+            result = c.fetchone()
+            if result:
+                old_expiry = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+                new_expiry = (old_expiry + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                c.execute("UPDATE proxies SET expiry_date=? WHERE ipv4=? AND port=? AND user=? AND password=?",
+                          (new_expiry, ipv4, int(port), user, password))
+                conn.commit()
+                update.message.reply_text(f"Đã gia hạn proxy {proxy} thêm {days} ngày.")
+            else:
+                update.message.reply_text("Proxy không tồn tại!")
+            conn.close()
+            context.user_data['state'] = None
+        except:
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass số_ngày")
+    elif state == 'xoa_le':
+        try:
+            ipv4, port, user, password = text.split(':')
+            conn = sqlite3.connect('proxies.db')
+            c = conn.cursor()
+            c.execute("SELECT ipv6 FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
+                      (ipv4, int(port), user, password))
+            result = c.fetchone()
+            if result:
+                ipv6 = result[0]
+                c.execute("DELETE FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
+                          (ipv4, int(port), user, password))
+                conn.commit()
+                
+                subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user])
+                
+                with open('/etc/squid/squid.conf', 'r') as f:
+                    lines = f.readlines()
+                with open('/etc/squid/squid.conf', 'w') as f:
+                    for line in lines:
+                        if f"tcp_outgoing_address {ipv6}" not in line and f"http_port {port}" not in line:
+                            f.write(line)
+                subprocess.run(['systemctl', 'restart', 'squid'])
+                update.message.reply_text(f"Đã xóa proxy {text}")
+            else:
+                update.message.reply_text("Proxy không tồn tại!")
+            conn.close()
+            context.user_data['state'] = None
+        except:
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass")
+    elif state == 'xoa_all':
+        if text == 'Xac_nhan_xoa_all':
+            conn = sqlite3.connect('proxies.db')
+            c = conn.cursor()
+            c.execute("DELETE FROM proxies")
+            conn.commit()
+            conn.close()
+            
+            open('/etc/squid/passwd', 'w').close()
+            
+            with open('/etc/squid/squid.conf', 'w') as f:
+                f.write("""
 acl localnet src 0.0.0.0/0
 http_access allow localnet
 http_access deny all
@@ -287,17 +279,21 @@ auth_param basic credentialsttl 2 hours
 acl auth_users proxy_auth REQUIRED
 http_access allow auth_users
 """)
-                    subprocess.run(['systemctl', 'restart', 'squid'])
-                    await event.reply("Đã xóa tất cả proxy!")
-                    context['state'] = None
-                else:
-                    await event.reply("Vui lòng nhập: Xac_nhan_xoa_all")
-            
-            client._user_data = context
+            subprocess.run(['systemctl', 'restart', 'squid'])
+            update.message.reply_text("Đã xóa tất cả proxy!")
+            context.user_data['state'] = None
+        else:
+            update.message.reply_text("Vui lòng nhập: Xac_nhan_xoa_all")
+
+def main():
+    init_db()
+    updater = Updater("7022711443:AAEuPP6oTQl5H274gwyLhcy1hT_3cCEzifE", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
+    updater.start_polling(poll_interval=1.0)  # Giới hạn 1 request/giây
+    updater.idle()
 
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
+    main()
