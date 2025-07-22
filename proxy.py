@@ -4,11 +4,9 @@ import subprocess
 import datetime
 import os
 from telethon.sync import TelegramClient
-from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
-from telethon.tl.types import InputPeerUser
+from telethon import events
 import sqlite3
 import ipaddress
-import asyncio
 
 # Thông tin API
 API_ID = 28514063
@@ -50,7 +48,6 @@ def generate_ipv6_from_prefix(prefix, num_addresses):
     max_addr = int(network.broadcast_address)
     ipv6_addresses = []
     
-    # Lấy danh sách IPv6 đã sử dụng để tránh trùng lặp
     conn = sqlite3.connect('proxies.db')
     c = conn.cursor()
     c.execute("SELECT ipv6 FROM proxies")
@@ -118,29 +115,29 @@ async def main():
         
         @client.on(events.NewMessage(from_users=ADMIN_ID, pattern='/start'))
         async def start(event):
-            context = {}  # Lưu trữ trạng thái cho mỗi người dùng
+            context = getattr(client, '_user_data', {})
             context['state'] = 'prefix'
-            await event.reply("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
             client._user_data = context
+            await event.reply("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
 
-        @client.on(events.CallbackQuery(from_users=ADMIN_ID))
+        @client.on(events.InlineQuery(from_users=ADMIN_ID))
         async def button(event):
-            context = client._user_data
-            data = event.data.decode('utf-8')
+            context = getattr(client, '_user_data', {})
+            query = event.query.query
             
-            if data == 'new':
+            if query == 'new':
                 if 'prefix' not in context:
-                    await event.reply("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+                    await event.answer("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
                     return
                 context['state'] = 'new'
-                await event.reply("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
-            elif data == 'xoa':
+                await event.answer("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
+            elif query == 'xoa':
                 keyboard = [
                     [{"text": "Xóa proxy lẻ", "callback_data": "xoa_le"},
                      {"text": "Xóa hàng loạt", "callback_data": "xoa_all"}]
                 ]
-                await event.reply("Chọn kiểu xóa:", reply_markup={'inline_keyboard': keyboard})
-            elif data == 'check':
+                await event.answer("Chọn kiểu xóa:", reply_markup={'inline_keyboard': keyboard})
+            elif query == 'check':
                 conn = sqlite3.connect('proxies.db')
                 c = conn.cursor()
                 c.execute("SELECT ipv4, port, user, password, is_used FROM proxies")
@@ -157,20 +154,22 @@ async def main():
                     for p in used:
                         f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
                 
-                await event.reply(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
-            elif data == 'giahan':
+                await event.answer(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
+            elif query == 'giahan':
                 context['state'] = 'giahan'
-                await event.reply("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
-            elif data == 'xoa_le':
+                await event.answer("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
+            elif query == 'xoa_le':
                 context['state'] = 'xoa_le'
-                await event.reply("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
-            elif data == 'xoa_all':
+                await event.answer("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
+            elif query == 'xoa_all':
                 context['state'] = 'xoa_all'
-                await event.reply("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
+                await event.answer("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
+            
+            client._user_data = context
 
         @client.on(events.NewMessage(from_users=ADMIN_ID))
         async def message_handler(event):
-            context = client._user_data
+            context = getattr(client, '_user_data', {})
             text = event.message.text.strip()
             
             if context.get('state') == 'prefix':
@@ -292,10 +291,11 @@ http_access allow auth_users
                     context['state'] = None
                 else:
                     await event.reply("Vui lòng nhập: Xac_nhan_xoa_all")
+            
+            client._user_data = context
 
         await client.run_until_disconnected()
 
 if __name__ == '__main__':
     import asyncio
-    from telethon import events
     asyncio.run(main())
