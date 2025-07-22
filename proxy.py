@@ -181,14 +181,17 @@ def create_proxy(ipv4, ipv6_addresses, days):
             
             # Thêm cấu hình Squid
             lines.insert(http_access_index, f"http_port [{ipv6}]:{port}\n")
-            proxies.append((f"{ipv4}:{port}:{user}:{password}", ipv6))
+            proxies.append((f"[{ipv6}]:{port}:{user}:{password}", ipv6))
         
         with open(SQUID_CONF, "w") as f:
             f.writelines(lines)
         
         # Thêm user/pass vào Squid
         for proxy, ipv6 in proxies:
-            _, _, user, password = proxy.split(":")
+            # Tách chuỗi proxy cẩn thận để xử lý IPv6
+            ipv6_end = proxy.find("]:")
+            user_pass = proxy[ipv6_end + 2:].split(":")
+            user, password = user_pass[-2], user_pass[-1]
             subprocess.run(['htpasswd', '-b', SQUID_PASSWD, user, password], check=True)
         
         conn.commit()
@@ -248,10 +251,10 @@ def button(update: Update, context: CallbackContext):
         
         with open('waiting.txt', 'w') as f:
             for p in waiting:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
+                f.write(f"[{p[5]}]:{p[1]}:{p[2]}:{p[3]} (IPv4: {p[0]})\n")
         with open('used.txt', 'w') as f:
             for p in used:
-                f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]} (IPv6: {p[5]})\n")
+                f.write(f"[{p[5]}]:{p[1]}:{p[2]}:{p[3]} (IPv4: {p[0]})\n")
         
         try:
             context.bot.send_document(chat_id=update.effective_chat.id, document=open('waiting.txt', 'rb'), caption="Danh sách proxy chờ")
@@ -261,10 +264,10 @@ def button(update: Update, context: CallbackContext):
             logger.error(f"Lỗi khi gửi file waiting.txt/used.txt: {e}")
             query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nLỗi khi gửi file: {e}")
     elif query.data == 'giahan':
-        query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
+        query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: [IPv6]:port:user:pass số_ngày):")
         context.user_data['state'] = 'giahan'
     elif query.data == 'xoa_le':
-        query.message.reply_text("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
+        query.message.reply_text("Nhập proxy cần xóa (định dạng: [IPv6]:port:user:pass):")
         context.user_data['state'] = 'xoa_le'
     elif query.data == 'xoa_all':
         query.message.reply_text("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
@@ -307,11 +310,11 @@ def message_handler(update: Update, context: CallbackContext):
             proxies = create_proxy(ipv4, ipv6_addresses, days)
             
             if num_proxies < 5:
-                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(p[0] + f" (IPv6: {p[1]})" for p in proxies))
+                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(p[0] + f" (IPv4: {ipv4})" for p in proxies))
             else:
                 with open('proxies.txt', 'w') as f:
                     for proxy, ipv6 in proxies:
-                        f.write(f"{proxy} (IPv6: {p[1]})\n")
+                        f.write(f"{proxy} (IPv4: {ipv4})\n")
                 try:
                     context.bot.send_document(
                         chat_id=update.effective_chat.id,
@@ -330,19 +333,24 @@ def message_handler(update: Update, context: CallbackContext):
     elif state == 'giahan':
         try:
             proxy, days = text.rsplit(' ', 1)
-            ipv4, port, user, password = proxy.split(':')
             days = int(days)
+            ipv6_end = proxy.find("]:")
+            if ipv6_end == -1:
+                update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: [IPv6]:port:user:pass số_ngày")
+                return
+            ipv6 = proxy[1:ipv6_end]
+            port, user, password = proxy[ipv6_end + 2:].split(':')
             
             conn = sqlite3.connect('proxies.db')
             c = conn.cursor()
-            c.execute("SELECT expiry_date FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                      (ipv4, int(port), user, password))
+            c.execute("SELECT expiry_date FROM proxies WHERE ipv6=? AND port=? AND user=? AND password=?",
+                      (ipv6, int(port), user, password))
             result = c.fetchone()
             if result:
                 old_expiry = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
                 new_expiry = (old_expiry + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-                c.execute("UPDATE proxies SET expiry_date=? WHERE ipv4=? AND port=? AND user=? AND password=?",
-                          (new_expiry, ipv4, int(port), user, password))
+                c.execute("UPDATE proxies SET expiry_date=? WHERE ipv6=? AND port=? AND user=? AND password=?",
+                          (new_expiry, ipv6, int(port), user, password))
                 conn.commit()
                 update.message.reply_text(f"Đã gia hạn proxy {proxy} thêm {days} ngày.")
             else:
@@ -350,19 +358,24 @@ def message_handler(update: Update, context: CallbackContext):
             conn.close()
             context.user_data['state'] = None
         except:
-            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: IP:port:user:pass số_ngày")
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: [IPv6]:port:user:pass số_ngày")
     elif state == 'xoa_le':
         try:
-            ipv4, port, user, password = text.split(':')
+            ipv6_end = text.find("]:")
+            if ipv6_end == -1:
+                update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: [IPv6]:port:user:pass")
+                return
+            ipv6 = text[1:ipv6_end]
+            port, user, password = text[ipv6_end + 2:].split(':')
+            
             conn = sqlite3.connect('proxies.db')
             c = conn.cursor()
-            c.execute("SELECT ipv6 FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                      (ipv4, int(port), user, password))
+            c.execute("SELECT ipv6 FROM proxies WHERE ipv6=? AND port=? AND user=? AND password=?",
+                      (ipv6, int(port), user, password))
             result = c.fetchone()
             if result:
-                ipv6 = result[0]
-                c.execute("DELETE FROM proxies WHERE ipv4=? AND port=? AND user=? AND password=?",
-                          (ipv4, int(port), user, password))
+                c.execute("DELETE FROM proxies WHERE ipv6=? AND port=? AND user=? AND password=?",
+                          (ipv6, int(port), user, password))
                 conn.commit()
                 
                 subprocess.run(['htpasswd', '-D', SQUID_PASSWD, user], check=True)
