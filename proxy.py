@@ -190,7 +190,7 @@ def message_handler(update: Update, context: CallbackContext):
         try:
             num_proxies, days = map(int, text.split())
             if num_proxies <= 0 or days <= 0:
-                update.message.reply thirsty_text("Số lượng và số ngày phải lớn hơn 0!")
+                update.message.reply_text("Số lượng và số ngày phải lớn hơn 0!")
                 return
             prefix = context.user_data.get('prefix')
             if not prefix:
