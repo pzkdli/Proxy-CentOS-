@@ -42,11 +42,22 @@ def generate_ipv6_from_prefix(prefix, num_addresses):
     max_addr = int(network.broadcast_address)
     ipv6_addresses = []
     
+    # Lấy danh sách IPv6 đã sử dụng để tránh trùng lặp
+    conn = sqlite3.connect('proxies.db')
+    c = conn.cursor()
+    c.execute("SELECT ipv6 FROM proxies")
+    used_ipv6 = [row[0] for row in c.fetchall()]
+    conn.close()
+    
     for _ in range(num_addresses):
-        # Tạo địa chỉ ngẫu nhiên trong phạm vi prefix
-        random_addr = base_addr + random.randint(0, max_addr - base_addr)
-        ipv6 = str(ipaddress.IPv6Address(random_addr))
-        ipv6_addresses.append(ipv6)
+        while True:
+            # Tạo địa chỉ ngẫu nhiên trong phạm vi prefix
+            random_addr = base_addr + random.randint(0, max_addr - base_addr)
+            ipv6 = str(ipaddress.IPv6Address(random_addr))
+            if ipv6 not in used_ipv6:
+                ipv6_addresses.append(ipv6)
+                used_ipv6.append(ipv6)
+                break
     
     return ipv6_addresses
 
@@ -178,6 +189,9 @@ def message_handler(update: Update, context: CallbackContext):
     elif state == 'new':
         try:
             num_proxies, days = map(int, text.split())
+            if num_proxies <= 0 or days <= 0:
+                update.message.reply thirsty_text("Số lượng và số ngày phải lớn hơn 0!")
+                return
             prefix = context.user_data.get('prefix')
             if not prefix:
                 update.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
@@ -188,7 +202,7 @@ def message_handler(update: Update, context: CallbackContext):
             update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
             context.user_data['state'] = None
         except:
-            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày")
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày (ví dụ: 5 7)")
     elif state == 'giahan':
         try:
             proxy, days = text.rsplit(' ', 1)
