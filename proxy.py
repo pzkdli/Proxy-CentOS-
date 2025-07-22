@@ -99,7 +99,7 @@ def generate_ipv6_from_prefix(prefix, num_addresses):
 def check_proxy_usage(ipv4, port, user, password, expected_ipv6):
     try:
         cmd = f'curl --proxy http://{user}:{password}@{ipv4}:{port} --connect-timeout 5 https://api64.ipify.org?format=json'
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
         if result.returncode == 0:
             response = json.loads(result.stdout)
             ip = response.get('ip', '')
@@ -115,7 +115,8 @@ def check_proxy_usage(ipv4, port, user, password, expected_ipv6):
         else:
             logger.error(f"Proxy {ipv4}:{port} không kết nối được: {result.stderr}")
             return False, None
-    except Exception as e:
+   GOOD
+except Exception as e:
         logger.error(f"Lỗi khi kiểm tra proxy {ipv4}:{port}: {e}")
         return False, None
 
@@ -160,8 +161,7 @@ acl Safe_ports port 443
 acl CONNECT method CONNECT
 http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
-acl localnet src 0.0.0.0/0
-acl localnet src ::/0
+acl localnet src all
 http_access allow localnet
 http_access deny all
 auth_param basic program /usr/lib64/squid/basic_ncsa_auth /etc/squid/passwd
@@ -175,7 +175,7 @@ http_access allow auth_users
             f.write(squid_conf_base)
         
         for ipv6 in ipv6_addresses:
-            # Gán IPv6 vào giao diện trước khi dùng
+            # Gán IPv6 vào giao diện
             result = subprocess.run(['ip', '-6', 'addr', 'add', f'{ipv6}/64', 'dev', 'eth0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode != 0:
                 logger.error(f"Lỗi khi gán IPv6 {ipv6}: {result.stderr}")
@@ -200,7 +200,7 @@ http_access allow auth_users
                 f.write(f"tcp_outgoing_address {ipv6} proxy_{user}\n")
                 f.write(f"http_port {ipv4}:{port}\n")
             
-            # Kiểm tra và thêm user vào file passwd
+            # Thêm user vào file passwd
             result = subprocess.run(['htpasswd', '-b', '/etc/squid/passwd', user, password], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             if result.returncode != 0:
                 logger.error(f"Lỗi khi thêm user {user} vào /etc/squid/passwd: {result.stderr}")
@@ -393,9 +393,9 @@ def message_handler(update: Update, context: CallbackContext):
                 conn.commit()
                 
                 # Xóa IPv6 khỏi giao diện
-                subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], check=False)
+                subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 
-                subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user], check=True)
+                subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 
                 with open('/etc/squid/squid.conf', 'r') as f:
                     lines = f.readlines()
@@ -403,7 +403,7 @@ def message_handler(update: Update, context: CallbackContext):
                     for line in lines:
                         if f"acl proxy_{user}" not in line and f"tcp_outgoing_address {ipv6}" not in line and f"http_port {ipv4}:{port}" not in line:
                             f.write(line)
-                subprocess.run(['systemctl', 'restart', 'squid'], check=True)
+                subprocess.run(['systemctl', 'restart', 'squid'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 update.message.reply_text(f"Đã xóa proxy {text}")
             else:
                 update.message.reply_text("Proxy không tồn tại!")
@@ -425,7 +425,7 @@ def message_handler(update: Update, context: CallbackContext):
                 
                 # Xóa tất cả IPv6 khỏi giao diện
                 for ipv6 in ipv6_addresses:
-                    subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], check=False)
+                    subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 
                 open('/etc/squid/passwd', 'w').close()
                 
@@ -437,8 +437,7 @@ acl Safe_ports port 443
 acl CONNECT method CONNECT
 http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
-acl localnet src 0.0.0.0/0
-acl localnet src ::/0
+acl localnet src all
 http_access allow localnet
 http_access deny all
 auth_param basic program /usr/lib64/squid/basic_ncsa_auth /etc/squid/passwd
@@ -448,28 +447,4 @@ auth_param basic credentialsttl 2 hours
 acl auth_users proxy_auth REQUIRED
 http_access allow auth_users
 """)
-                subprocess.run(['systemctl', 'restart', 'squid'], check=True)
-                update.message.reply_text("Đã xóa tất cả proxy!")
-                context.user_data['state'] = None
-            except Exception as e:
-                logger.error(f"Lỗi khi xóa tất cả proxy: {e}")
-                update.message.reply_text(f"Lỗi khi xóa tất cả proxy: {e}")
-        else:
-            update.message.reply_text("Vui lòng nhập: Xac_nhan_xoa_all")
-
-def main():
-    init_db()
-    updater = Updater("7022711443:AAHPixbTjnocW3LWgpW6gsGep-mCScOzJvM", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(button))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
-    
-    # Khởi động luồng kiểm tra proxy
-    threading.Thread(target=auto_check_proxies, daemon=True).start()
-    
-    updater.start_polling(poll_interval=1.0)
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+                subprocess.run(['systemctl', 'restart', 'squid'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newli
