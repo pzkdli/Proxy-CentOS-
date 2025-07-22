@@ -330,7 +330,7 @@ http_access allow auth_users
 
 def main():
     init_db()
-    updater = Updater("YOUR_NEW_BOT_TOKEN", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
+    updater = Updater("7022711443:AAHPixbTjnocW3LWgpW6gsGep-mCScOzJvM", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CallbackQueryHandler(button))
