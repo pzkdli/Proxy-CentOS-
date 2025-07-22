@@ -1,4 +1,3 @@
-
 import random
 import string
 import subprocess
@@ -200,7 +199,15 @@ def message_handler(update: Update, context: CallbackContext):
             ipv6_addresses = generate_ipv6_from_prefix(prefix, num_proxies)
             ipv4 = subprocess.getoutput("curl -s ifconfig.me")  # Lấy IPv4 của VPS
             proxies = create_proxy(ipv4, ipv6_addresses, days)
-            update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
+            
+            if num_proxies < 5:
+                update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
+            else:
+                with open('proxies.txt', 'w') as f:
+                    for proxy in proxies:
+                        f.write(f"{proxy}\n")
+                update.message.reply_text(f"Đã tạo {num_proxies} proxy và lưu vào file proxies.txt")
+            
             context.user_data['state'] = None
         except:
             update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày (ví dụ: 5 7)")
