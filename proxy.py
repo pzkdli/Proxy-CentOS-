@@ -53,6 +53,20 @@ def validate_ipv4(ip):
         logger.error(f"Địa chỉ IPv4 không hợp lệ: {ip}")
         return False
 
+# Kiểm tra IPv6 có hoạt động trên VPS
+def check_ipv6_support():
+    try:
+        result = subprocess.run(['ping6', '-c', '1', 'ipv6.google.com'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
+        if result.returncode == 0:
+            logger.info("IPv6 hoạt động trên VPS")
+            return True
+        else:
+            logger.error(f"IPv6 không hoạt động: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"Lỗi khi kiểm tra IPv6: {e}")
+        return False
+
 # Tạo địa chỉ IPv6 ngẫu nhiên từ prefix
 def generate_ipv6_from_prefix(prefix, num_addresses):
     try:
@@ -82,15 +96,22 @@ def generate_ipv6_from_prefix(prefix, num_addresses):
         raise
 
 # Kiểm tra kết nối proxy thực tế
-def check_proxy_usage(ipv4, port, user, password):
+def check_proxy_usage(ipv4, port, user, password, expected_ipv6):
     try:
         cmd = f'curl --proxy http://{user}:{password}@{ipv4}:{port} --connect-timeout 5 https://api64.ipify.org?format=json'
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             response = json.loads(result.stdout)
             ip = response.get('ip', '')
-            logger.info(f"Proxy {ipv4}:{port} trả về IP: {ip}")
-            return True, ip  # Trả về trạng thái kết nối và IP
+            try:
+                ipaddress.IPv6Address(ip)
+                logger.info(f"Proxy {ipv4}:{port} trả về IPv6: {ip}")
+                if ip != expected_ipv6:
+                    logger.warning(f"Proxy {ipv4}:{port} trả về IPv6 {ip} không khớp với {expected_ipv6}")
+                return True, ip
+            except ValueError:
+                logger.warning(f"Proxy {ipv4}:{port} trả về IPv4: {ip} thay vì IPv6")
+                return True, ip
         else:
             logger.error(f"Proxy {ipv4}:{port} không kết nối được: {result.stderr}")
             return False, None
@@ -109,25 +130,21 @@ def auto_check_proxies():
             
             for proxy in proxies:
                 ipv4, port, user, password, ipv6 = proxy
-                is_used, returned_ip = check_proxy_usage(ipv4, port, user, password)
-                if returned_ip:
-                    try:
-                        ipaddress.IPv6Address(returned_ip)  # Kiểm tra xem IP trả về có phải IPv6 không
-                        if returned_ip != ipv6:
-                            logger.warning(f"Proxy {ipv4}:{port} trả về IPv6 {returned_ip} không khớp với {ipv6}")
-                    except ValueError:
-                        logger.warning(f"Proxy {ipv4}:{port} trả về IPv4 {returned_ip} thay vì IPv6")
+                is_used, returned_ip = check_proxy_usage(ipv4, port, user, password, ipv6)
                 c.execute("UPDATE proxies SET is_used=? WHERE ipv4=? AND port=? AND user=? AND password=?",
                           (1 if is_used else 0, ipv4, port, user, password))
             conn.commit()
             conn.close()
         except Exception as e:
             logger.error(f"Lỗi khi kiểm tra proxy tự động: {e}")
-        time.sleep(60)  # Chờ 60 giây trước khi kiểm tra lại
+        time.sleep(60)
 
 # Tạo proxy mới với danh sách IPv6
 def create_proxy(ipv4, ipv6_addresses, days):
     try:
+        if not check_ipv6_support():
+            raise Exception("IPv6 không hoạt động trên VPS. Vui lòng kiểm tra cấu hình mạng.")
+        
         conn = sqlite3.connect('proxies.db')
         c = conn.cursor()
         
@@ -137,7 +154,14 @@ def create_proxy(ipv4, ipv6_addresses, days):
         proxies = []
         # Đảm bảo file squid.conf có cấu hình cơ bản
         squid_conf_base = """
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl CONNECT method CONNECT
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
 acl localnet src 0.0.0.0/0
+acl localnet src ::/0
 http_access allow localnet
 http_access deny all
 auth_param basic program /usr/lib64/squid/basic_ncsa_auth /etc/squid/passwd
@@ -147,13 +171,16 @@ auth_param basic credentialsttl 2 hours
 acl auth_users proxy_auth REQUIRED
 http_access allow auth_users
 """
-        with open('/etc/squid/squid.conf', 'r') as f:
-            current_conf = f.read()
-        if not all(line.strip() in current_conf for line in squid_conf_base.splitlines() if line.strip()):
-            with open('/etc/squid/squid.conf', 'w') as f:
-                f.write(squid_conf_base)
+        with open('/etc/squid/squid.conf', 'w') as f:
+            f.write(squid_conf_base)
         
         for ipv6 in ipv6_addresses:
+            # Gán IPv6 vào giao diện trước khi dùng
+            result = subprocess.run(['ip', '-6', 'addr', 'add', f'{ipv6}/64', 'dev', 'eth0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            if result.returncode != 0:
+                logger.error(f"Lỗi khi gán IPv6 {ipv6}: {result.stderr}")
+                raise Exception(f"Lỗi khi gán IPv6 {ipv6}: {result.stderr}")
+            
             while True:
                 port = random.randint(1000, 60000)
                 if port not in used_ports:
@@ -171,7 +198,7 @@ http_access allow auth_users
             with open('/etc/squid/squid.conf', 'a') as f:
                 f.write(f"acl proxy_{user} myport {port}\n")
                 f.write(f"tcp_outgoing_address {ipv6} proxy_{user}\n")
-                f.write(f"http_port {ipv4}:{port}\n")  # Chỉ định rõ ràng IPv4 và cổng
+                f.write(f"http_port {ipv4}:{port}\n")
             
             # Kiểm tra và thêm user vào file passwd
             result = subprocess.run(['htpasswd', '-b', '/etc/squid/passwd', user, password], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
@@ -365,6 +392,9 @@ def message_handler(update: Update, context: CallbackContext):
                           (ipv4, int(port), user, password))
                 conn.commit()
                 
+                # Xóa IPv6 khỏi giao diện
+                subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], check=False)
+                
                 subprocess.run(['htpasswd', '-D', '/etc/squid/passwd', user], check=True)
                 
                 with open('/etc/squid/squid.conf', 'r') as f:
@@ -387,15 +417,28 @@ def message_handler(update: Update, context: CallbackContext):
             try:
                 conn = sqlite3.connect('proxies.db')
                 c = conn.cursor()
+                c.execute("SELECT ipv6 FROM proxies")
+                ipv6_addresses = [row[0] for row in c.fetchall()]
                 c.execute("DELETE FROM proxies")
                 conn.commit()
                 conn.close()
+                
+                # Xóa tất cả IPv6 khỏi giao diện
+                for ipv6 in ipv6_addresses:
+                    subprocess.run(['ip', '-6', 'addr', 'del', f'{ipv6}/64', 'dev', 'eth0'], check=False)
                 
                 open('/etc/squid/passwd', 'w').close()
                 
                 with open('/etc/squid/squid.conf', 'w') as f:
                     f.write("""
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl CONNECT method CONNECT
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
 acl localnet src 0.0.0.0/0
+acl localnet src ::/0
 http_access allow localnet
 http_access deny all
 auth_param basic program /usr/lib64/squid/basic_ncsa_auth /etc/squid/passwd
@@ -425,7 +468,7 @@ def main():
     # Khởi động luồng kiểm tra proxy
     threading.Thread(target=auto_check_proxies, daemon=True).start()
     
-    updater.start_polling(poll_interval=1.0)  # Giới hạn 1 request/giây
+    updater.start_polling(poll_interval=1.0)
     updater.idle()
 
 if __name__ == '__main__':
