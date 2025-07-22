@@ -27,13 +27,28 @@ def generate_user():
 def generate_password():
     return ''.join(random.choices(string.ascii_uppercase, k=2))
 
-# Kiểm tra định dạng địa chỉ IPv6
-def validate_ipv6_address(ipv6):
+# Kiểm tra định dạng prefix IPv6
+def validate_ipv6_prefix(prefix):
     try:
-        ipaddress.IPv6Address(ipv6)
+        ipaddress.IPv6Network(prefix, strict=False)
         return True
     except ValueError:
         return False
+
+# Tạo địa chỉ IPv6 ngẫu nhiên từ prefix
+def generate_ipv6_from_prefix(prefix, num_addresses):
+    network = ipaddress.IPv6Network(prefix, strict=False)
+    base_addr = int(network.network_address)
+    max_addr = int(network.broadcast_address)
+    ipv6_addresses = []
+    
+    for _ in range(num_addresses):
+        # Tạo địa chỉ ngẫu nhiên trong phạm vi prefix
+        random_addr = base_addr + random.randint(0, max_addr - base_addr)
+        ipv6 = str(ipaddress.IPv6Address(random_addr))
+        ipv6_addresses.append(ipv6)
+    
+    return ipv6_addresses
 
 # Tạo proxy mới với danh sách IPv6
 def create_proxy(ipv4, ipv6_addresses, days):
@@ -90,21 +105,18 @@ def start(update: Update, context: CallbackContext):
         update.message.reply_text("Bạn không có quyền sử dụng bot này!")
         return
     
-    keyboard = [
-        [InlineKeyboardButton("/New", callback_data='new'),
-         InlineKeyboardButton("/Xoa", callback_data='xoa')],
-        [InlineKeyboardButton("/Check", callback_data='check'),
-         InlineKeyboardButton("/Giahan", callback_data='giahan')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Chọn lệnh:", reply_markup=reply_markup)
+    update.message.reply_text("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
+    context.user_data['state'] = 'prefix'
 
 def button(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
     
     if query.data == 'new':
-        query.message.reply_text("Nhập số ngày và danh sách địa chỉ IPv6 (mỗi địa chỉ trên một dòng):")
+        if 'prefix' not in context.user_data:
+            query.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+            return
+        query.message.reply_text("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
         context.user_data['state'] = 'new'
     elif query.data == 'xoa':
         keyboard = [
@@ -135,7 +147,7 @@ def button(update: Update, context: CallbackContext):
         query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
         context.user_data['state'] = 'giahan'
     elif query.data == 'xoa_le':
-        query.message.reply_text("Nhập proxy cần xóa (định dạng: IP:port:user:(pass):")
+        query.message.reply_text("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
         context.user_data['state'] = 'xoa_le'
     elif query.data == 'xoa_all':
         query.message.reply_text("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
@@ -149,24 +161,34 @@ def message_handler(update: Update, context: CallbackContext):
     state = context.user_data.get('state')
     text = update.message.text.strip()
     
-    if state == 'new':
+    if state == 'prefix':
+        if validate_ipv6_prefix(text):
+            context.user_data['prefix'] = text
+            keyboard = [
+                [InlineKeyboardButton("/New", callback_data='new'),
+                 InlineKeyboardButton("/Xoa", callback_data='xoa')],
+                [InlineKeyboardButton("/Check", callback_data='check'),
+                 InlineKeyboardButton("/Giahan", callback_data='giahan')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text("Prefix IPv6 đã được lưu. Chọn lệnh:", reply_markup=reply_markup)
+            context.user_data['state'] = None
+        else:
+            update.message.reply_text("Prefix IPv6 không hợp lệ! Vui lòng nhập lại:")
+    elif state == 'new':
         try:
-            lines = text.split('\n')
-            days = int(lines[0])
-            ipv6_addresses = [ip.strip() for ip in lines[1:] if ip.strip()]
-            
-            # Kiểm tra định dạng IPv6
-            for ipv6 in ipv6_addresses:
-                if not validate_ipv6_address(ipv6):
-                    update.message.reply_text(f"Địa chỉ IPv6 không hợp lệ: {ipv6}")
-                    return
-            
+            num_proxies, days = map(int, text.split())
+            prefix = context.user_data.get('prefix')
+            if not prefix:
+                update.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+                return
+            ipv6_addresses = generate_ipv6_from_prefix(prefix, num_proxies)
             ipv4 = subprocess.getoutput("curl -s ifconfig.me")  # Lấy IPv4 của VPS
             proxies = create_proxy(ipv4, ipv6_addresses, days)
             update.message.reply_text("Proxy đã tạo:\n" + "\n".join(proxies))
             context.user_data['state'] = None
         except:
-            update.message.reply_text("Định dạng không hợp lệ! Nhập số ngày ở dòng đầu tiên, sau đó là danh sách địa chỉ IPv6 (mỗi địa chỉ trên một dòng).")
+            update.message.reply_text("Định dạng không hợp lệ! Vui lòng nhập: số_lượng số_ngày")
     elif state == 'giahan':
         try:
             proxy, days = text.rsplit(' ', 1)
@@ -265,4 +287,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
