@@ -7,6 +7,7 @@ from telethon.sync import TelegramClient
 from telethon import events
 import sqlite3
 import ipaddress
+import asyncio
 
 # Thông tin API
 API_ID = 28514063
@@ -120,24 +121,24 @@ async def main():
             client._user_data = context
             await event.reply("Nhập prefix IPv6 (định dạng: 2401:2420:0:102f::/64 hoặc 2401:2420:0:102f:0000:0000:0000:0001/64):")
 
-        @client.on(events.InlineQuery(from_users=ADMIN_ID))
+        @client.on(events.CallbackQuery(from_users=ADMIN_ID))
         async def button(event):
             context = getattr(client, '_user_data', {})
-            query = event.query.query
+            data = event.data.decode('utf-8')
             
-            if query == 'new':
+            if data == 'new':
                 if 'prefix' not in context:
-                    await event.answer("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+                    await event.reply("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
                     return
                 context['state'] = 'new'
-                await event.answer("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
-            elif query == 'xoa':
+                await event.reply("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
+            elif data == 'xoa':
                 keyboard = [
                     [{"text": "Xóa proxy lẻ", "callback_data": "xoa_le"},
                      {"text": "Xóa hàng loạt", "callback_data": "xoa_all"}]
                 ]
-                await event.answer("Chọn kiểu xóa:", reply_markup={'inline_keyboard': keyboard})
-            elif query == 'check':
+                await event.reply("Chọn kiểu xóa:", reply_markup={'inline_keyboard': keyboard})
+            elif data == 'check':
                 conn = sqlite3.connect('proxies.db')
                 c = conn.cursor()
                 c.execute("SELECT ipv4, port, user, password, is_used FROM proxies")
@@ -154,16 +155,16 @@ async def main():
                     for p in used:
                         f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
                 
-                await event.answer(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
-            elif query == 'giahan':
+                await event.reply(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
+            elif data == 'giahan':
                 context['state'] = 'giahan'
-                await event.answer("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
-            elif query == 'xoa_le':
+                await event.reply("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
+            elif data == 'xoa_le':
                 context['state'] = 'xoa_le'
-                await event.answer("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
-            elif query == 'xoa_all':
+                await event.reply("Nhập proxy cần xóa (định dạng: IP:port:user:pass):")
+            elif data == 'xoa_all':
                 context['state'] = 'xoa_all'
-                await event.answer("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
+                await event.reply("Xác nhận xóa tất cả proxy? (Nhập: Xac_nhan_xoa_all)")
             
             client._user_data = context
 
@@ -294,8 +295,9 @@ http_access allow auth_users
             
             client._user_data = context
 
-        await client.run_until_disconnected()
-
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
