@@ -106,8 +106,8 @@ def create_proxy(ipv4, ipv6_addresses, days):
         conn.commit()
         conn.close()
         
-        # Kiểm tra và restart Squid
-        result = subprocess.run(['squid', '-k', 'check'], capture_output=True, text=True)
+        # Kiểm tra cấu hình Squid (tương thích Python 3.6)
+        result = subprocess.run(['squid', '-k', 'check'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         if result.returncode != 0:
             logger.error(f"Lỗi cấu hình Squid: {result.stderr}")
             raise Exception(f"Lỗi cấu hình Squid: {result.stderr}")
@@ -330,7 +330,7 @@ http_access allow auth_users
 
 def main():
     init_db()
-    updater = Updater("7022711443:AAEuPP6oTQl5H274gwyLhcy1hT_3cCEzifE", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
+    updater = Updater("7022711443:AAHPixbTjnocW3LWgpW6gsGep-mCScOzJvM", use_context=True, request_kwargs={'read_timeout': 6, 'connect_timeout': 7, 'con_pool_size': 1})
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CallbackQueryHandler(button))
