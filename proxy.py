@@ -145,7 +145,9 @@ def button(update: Update, context: CallbackContext):
             for p in used:
                 f.write(f"{p[0]}:{p[1]}:{p[2]}:{p[3]}\n")
         
-        query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được tạo.")
+        context.bot.send_document(chat_id=update.effective_chat.id, document=open('waiting.txt', 'rb'), caption="Danh sách proxy chờ")
+        context.bot.send_document(chat_id=update.effective_chat.id, document=open('used.txt', 'rb'), caption="Danh sách proxy đã sử dụng")
+        query.message.reply_text(f"Proxy chờ: {len(waiting)}\nProxy đã sử dụng: {len(used)}\nFile waiting.txt và used.txt đã được gửi.")
     elif query.data == 'giahan':
         query.message.reply_text("Nhập proxy và số ngày gia hạn (định dạng: IP:port:user:pass số_ngày):")
         context.user_data['state'] = 'giahan'
@@ -198,7 +200,7 @@ def message_handler(update: Update, context: CallbackContext):
                 with open('proxies.txt', 'w') as f:
                     for proxy in proxies:
                         f.write(f"{proxy}\n")
-                update.message.reply_text(f"Đã tạo {num_proxies} proxy và lưu vào file proxies.txt")
+                context.bot.send_document(chat_id=update.effective_chat.id, document=open('proxies.txt', 'rb'), caption=f"Đã tạo {num_proxies} proxy")
             
             context.user_data['state'] = None
         except:
