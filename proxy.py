@@ -42,6 +42,15 @@ def validate_ipv6_prefix(prefix):
         logger.error(f"Prefix IPv6 không hợp lệ: {prefix}")
         return False
 
+# Kiểm tra định dạng IPv4
+def validate_ipv4(ip):
+    try:
+        ipaddress.IPv4Address(ip)
+        return True
+    except ValueError:
+        logger.error(f"Địa chỉ IPv4 không hợp lệ: {ip}")
+        return False
+
 # Tạo địa chỉ IPv6 ngẫu nhiên từ prefix
 def generate_ipv6_from_prefix(prefix, num_addresses):
     try:
@@ -166,8 +175,8 @@ def button(update: Update, context: CallbackContext):
     query.answer()
     
     if query.data == 'new':
-        if 'prefix' not in context.user_data:
-            query.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+        if 'prefix' not in context.user_data or 'ipv4' not in context.user_data:
+            query.message.reply_text("Vui lòng nhập prefix IPv6 và IPv4 trước bằng lệnh /start!")
             return
         query.message.reply_text("Nhập số lượng proxy và số ngày (định dạng: số_lượng số_ngày, ví dụ: 5 7):")
         context.user_data['state'] = 'new'
@@ -223,6 +232,13 @@ def message_handler(update: Update, context: CallbackContext):
     if state == 'prefix':
         if validate_ipv6_prefix(text):
             context.user_data['prefix'] = text
+            update.message.reply_text("Nhập địa chỉ IPv4 của VPS (định dạng: 192.168.1.1):")
+            context.user_data['state'] = 'ipv4'
+        else:
+            update.message.reply_text("Prefix IPv6 không hợp lệ! Vui lòng nhập lại:")
+    elif state == 'ipv4':
+        if validate_ipv4(text):
+            context.user_data['ipv4'] = text
             keyboard = [
                 [InlineKeyboardButton("/New", callback_data='new'),
                  InlineKeyboardButton("/Xoa", callback_data='xoa')],
@@ -230,10 +246,10 @@ def message_handler(update: Update, context: CallbackContext):
                  InlineKeyboardButton("/Giahan", callback_data='giahan')]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            update.message.reply_text("Prefix IPv6 đã được lưu. Chọn lệnh:", reply_markup=reply_markup)
+            update.message.reply_text("Prefix IPv6 và IPv4 đã được lưu. Chọn lệnh:", reply_markup=reply_markup)
             context.user_data['state'] = None
         else:
-            update.message.reply_text("Prefix IPv6 không hợp lệ! Vui lòng nhập lại:")
+            update.message.reply_text("Địa chỉ IPv4 không hợp lệ! Vui lòng nhập lại:")
     elif state == 'new':
         try:
             num_proxies, days = map(int, text.split())
@@ -241,11 +257,11 @@ def message_handler(update: Update, context: CallbackContext):
                 update.message.reply_text("Số lượng và số ngày phải lớn hơn 0!")
                 return
             prefix = context.user_data.get('prefix')
-            if not prefix:
-                update.message.reply_text("Vui lòng nhập prefix IPv6 trước bằng lệnh /start!")
+            ipv4 = context.user_data.get('ipv4')
+            if not prefix or not ipv4:
+                update.message.reply_text("Vui lòng nhập prefix IPv6 và IPv4 trước bằng lệnh /start!")
                 return
             ipv6_addresses = generate_ipv6_from_prefix(prefix, num_proxies)
-            ipv4 = subprocess.getoutput("curl -s ifconfig.me")
             proxies = create_proxy(ipv4, ipv6_addresses, days)
             
             if num_proxies < 5:
