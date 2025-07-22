@@ -115,7 +115,7 @@ def check_proxy_usage(ipv4, port, user, password, expected_ipv6):
         else:
             logger.error(f"Proxy {ipv4}:{port} không kết nối được: {result.stderr}")
             return False, None
-   GOOD
+   
 except Exception as e:
         logger.error(f"Lỗi khi kiểm tra proxy {ipv4}:{port}: {e}")
         return False, None
