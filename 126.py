@@ -27,6 +27,8 @@ def init_db():
     conn.commit()
     conn.close()
 
+#……
+
 # Tạo user ngẫu nhiên (vtoanXXXY)
 def generate_user():
     numbers = ''.join(random.choices(string.digits, k=3))
